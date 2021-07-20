@@ -1,0 +1,49 @@
+int pinOut=7;
+int cerradura=12;
+int pinEntradaCerrojo=8;
+int pinEntradaSensores=4;
+void mirarSensores(){
+  int sensor0 =analogRead(A0);
+  int sensor1 =analogRead(A1);
+if(sensor0>150){
+  Serial.print("El sensor 0");
+       Serial.print(" tiene la distancia ");
+       Serial.println(sensor0);
+       digitalWrite(pinOut,  HIGH);
+}else
+if(sensor1>150){
+  Serial.print("El sensor 1");
+       Serial.print(" tiene la distancia ");
+       Serial.println(sensor1);
+       digitalWrite(pinOut,  HIGH);
+}else{
+  digitalWrite(pinOut,  LOW);
+}
+
+  delay(100);
+}
+
+
+void setup() {
+// Comunicación seria a 9600 baudios
+  Serial.begin(9600);
+  pinMode(pinOut, OUTPUT);
+   pinMode(pinEntradaCerrojo,INPUT);
+   pinMode(pinEntradaSensores,INPUT);
+  pinMode(cerradura,OUTPUT);
+
+}
+
+void loop() {
+ if(digitalRead(pinEntradaCerrojo)){
+    digitalWrite(cerradura, HIGH); 
+  }else{
+     digitalWrite(cerradura, LOW); 
+  }
+  if(digitalRead(pinEntradaSensores)){
+     mirarSensores();
+  }
+ 
+
+
+}
