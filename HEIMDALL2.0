@@ -1,0 +1,597 @@
+///////////////////////////////////////////////////////////////////////// LIBRERIA SERVO
+#include<ESP32Servo.h>
+Servo motorD;
+Servo motorI;
+
+
+//////////////////////////////////////////////////////////////////////// LIBRERIA  BLUETOOTH
+#include "BluetoothSerial.h"
+BluetoothSerial SerialBT;
+
+///////////////////////////////////////////////////////////////////////   WIFI
+#include <WiFi.h>
+char ssid[20];
+char pass[20];
+
+String ssidString;
+String passString;
+WiFiServer server(80);//declaramos el servidor con el puerto 80
+
+int   cont = 0;
+char  caracter;
+char  cadena[20];
+int   lenSSID = 0;
+int   lenPASS = 0;
+bool  wifiSSID = true;
+bool  wifiPASS = false;
+
+int pulsadoDesc = 0;
+
+//////////////////////////////////////////////////////////////////////////// PINES
+
+//sensores
+int sensores = 26;
+int pinSens = 22; //para decirle al arduino uno que los mire
+
+//pitorro
+int pinPicaporte = 21;
+
+//cerrojo
+int pinCerrojo = 19;
+
+//int pinLed = 32;
+int botonDesconectarWifi = 35;
+
+//motores
+int pinMotorD = 32 ; // GPIO12-D6
+int pinMotorI = 33 ; // GPIO13-D7
+
+//ALEXA
+int alexaCierra=23;
+int alexaAbre=34;
+
+int estadoAlxA=0;
+int estadoAlxC=0;
+
+
+//sensores fin carrera
+int botonAbierto = 18; //GPIO5-D1
+int botonCerrado = 15; //GPIO4-D2
+//
+bool sinWifi;
+
+//alarma
+const int pinBuzzer = 4;
+boolean sonar = false;
+
+
+
+///////////////EEPROM///////////////////////////////
+//
+///* El EEPROM sirve para guardar datos en la memoria, en este caso los credenciales del wifi*/
+#include <EEPROM.h>
+#define EEPROM_SIZE 80
+
+
+//son address del vector de memoria
+int addrSSID = 0; //varible para guardar el nombre del wifi, desde al pos 0 hasta la 34
+int addrPASS = 35; //varible para guardar la clave de la red, desde 35 hasta 80
+
+
+String stringSSID = "";
+String stringPASS = "";
+
+
+
+////////////////////////////////////////////////////////////////////////////// VARIABLES DE TIEMPO
+
+//es la variable que voy a usar para contar los segundos que pasan desde que he puesto la alarma hasta que le hayamos indicado que se abra o cierre
+int tiempoA = -1;
+int tiempoC = -1;
+
+//variables para almacenar los tiempos de abrir y cerrar
+unsigned long tAnteriorA, tAnteriorC;
+
+
+///////////////////////////////////////////////////////////////////////////ESTADOS
+//estados de actuacion
+#define PARADA 2
+#define ABRIENDO 1
+#define CERRANDO 0
+
+bool alarma = false;
+
+//                                                                                                                                           binario  decimal
+//variable estado actual                                                                                                                       A  C   estado
+#define ABIERTA 2 //si es estado=2, botón de abierto en HIGH y el de cerrado en LOW. Por lo que la puerta se encuentra abierta completamente.  1  0 = 2 
+#define CERRADA 1  //si es estado=1, botón de abierto en LOW y el de cerrado en HIGH. Por lo que la puerta se encuentra cerrada completamente. 0  1 = 1
+#define ENTRE 0 //si es estado=0, los botones están en LOw. Por lo que la puerta está entreabierta.                                            0  0 = 0 
+
+//estado actual de actuacion
+int estadoDeAccion = PARADA;
+
+//estado actual de la puerta
+int estadoPuerta = ENTRE;
+
+
+
+// VARIABLES DE ESTADO DE BOTONES(finales de carrera)
+int estadoA = LOW; //estado actual del final de carrera de abierto
+int estadoC = LOW; //estado actual del final de carrera de cerradoxz
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////FUNCIONES MOTORES
+void desconectaRuedas() {
+
+  if (motorD.attached()) motorD.detach();
+  if (motorI.attached()) motorI.detach();
+}
+
+void conectaRuedas() {
+  if (!(motorD.attached())) motorD.attach(pinMotorD);
+  if (!(motorI.attached())) motorI.attach(pinMotorI);
+
+}
+void para() {           // Para el robot
+  estadoDeAccion = PARADA;
+  motorD.detach();
+  motorI.detach();
+  delay(15);
+
+  //si el metodo parar ha sido llamado por los finales de carrera, entonces si que esta cerrada o abierta del todo, sino, esta entre abierta
+  if ( estadoPuerta != CERRADA || estadoPuerta != ABIERTA ) {
+    estadoPuerta = ENTRE;
+  }
+  digitalWrite(pinPicaporte, LOW);
+
+
+}
+void abrir() {
+  conectaRuedas();
+  Serial.println("Abriendo...");
+
+  estadoDeAccion = ABRIENDO;
+
+
+}
+
+void cerrar() {
+  conectaRuedas();
+  Serial.println("Cerrando...");
+  delay(5);
+
+  estadoDeAccion = CERRANDO;
+
+
+
+}
+
+///////////////////////////////////////////////////////////////////////////// SENSORES PROXIMIDAD
+
+
+#define ACTIVOS 1
+#define APAGADOS 0
+#define ACAB 2 // Es cuando el usuario ha marcado que quiere activar los sensores, pero la puerta se encuentra abierta, de forma que en cuanto se cierre, estos tienen que pasar a activos
+
+
+int sensoresActivados = APAGADOS;
+
+//////////////////////////////////////////////////////////// alarma funciones
+void hacerSonarAlarma() {
+
+   
+    tone(pinBuzzer, 500);
+    delay(250);
+
+    tone(pinBuzzer, 600);
+    delay(175);
+ 
+}
+//////////////////////////////////////////////////////////////////////////////MAQUINA ESTADOS
+
+void estadosPuerta() {
+  if (estadoA) {
+    estadoPuerta = ABIERTA;
+  } else if (estadoC) {
+    estadoPuerta = CERRADA;
+  } else {
+    estadoPuerta = ENTRE;
+  }
+}
+
+void maquinaEstados() {
+  if (estadoDeAccion == ABRIENDO) {
+    if (estadoPuerta != ABIERTA) {
+      digitalWrite(pinPicaporte, HIGH);
+      delay(5);
+      motorD.write(180);
+      motorI.write(0);
+      delay(1);
+    } else {
+      para();
+    }
+  } else if (estadoDeAccion == CERRANDO) {
+    if (estadoPuerta != CERRADA) {
+      digitalWrite(pinPicaporte, HIGH);
+      delay(5);
+      motorD.write(0);
+      motorI.write(180);
+
+      delay(1);
+    } else {
+      para();
+
+    }
+
+  } else if (estadoDeAccion == PARADA) {
+    if (alarma && estadoPuerta != CERRADA) {
+      //suena la alarma
+      Serial.println("Alarma sonando");
+      hacerSonarAlarma();
+     }else{
+    noTone(pinBuzzer);
+  }
+    delay(1);
+
+
+  }
+}
+
+
+
+
+/////////////////////////////////////////////////////////////////////////// SET UP
+void setup()
+{
+
+  Serial.begin(115200);
+  pinMode(botonDesconectarWifi, INPUT);
+  pinMode(sensores, INPUT);
+  pinMode(pinCerrojo, OUTPUT);
+  pinMode(pinPicaporte, OUTPUT);
+  pinMode(pinSens, OUTPUT);
+
+  //inicio finales Carrera
+  pinMode(botonAbierto, INPUT);
+  pinMode(botonCerrado, INPUT);
+
+//ALEXA
+  pinMode(alexaAbre, INPUT);
+  pinMode(alexaCierra, INPUT);
+  
+  EEPROM.begin(EEPROM_SIZE);
+  // cojo el ssid y el pass del eeprom, si tiene algo, pongo el sinWifi a false y cojo los credenciales del wifi.
+  EEPROM.get(addrSSID, ssid);
+  EEPROM.get(addrPASS, pass);
+
+  //cuenta atras para restear el wifi
+  unsigned long tAnteriorA;
+  int  tiempoD = 10;
+  sinWifi = false;
+  while (tiempoD != 0 && !sinWifi) {
+    pulsadoDesc = digitalRead(botonDesconectarWifi);
+    if (pulsadoDesc) {
+      Serial.println("se ha pulsado el boton");
+      sinWifi = true;
+      delay(1);
+    }
+    unsigned long tActual = millis();
+    if (tActual - tAnteriorA >= 1000) { // Descuento cada segundo
+      Serial.print("Quedan ");
+      Serial.print(tiempoD);
+      Serial.println(" segundos para que HEIMDALL se conecte al wifi que tiene guardado.");
+      Serial.println("Si no está bien, pulse el boton para cancelar");
+      tAnteriorA = tActual; // Momento en que se inicia un nuevo segundo
+      tiempoD--;
+
+    }
+    tiempoA = -1;
+  }
+
+  if (!sinWifi) {
+    //antes de iniciar la conexion con el wifi, lo desconecto
+    WiFi.disconnect();
+
+    iniciarWifi();
+    cont++;
+
+    lenSSID = sizeof(ssid);
+    lenPASS = sizeof(pass);
+  }
+
+
+
+}
+void iniciarWifi() {
+  Serial.println("Inicio wifi");
+  // Connect
+  WiFi.mode(WIFI_STA);
+  Serial.printf("[WIFI] Conectando con %s ", ssid);
+  WiFi.begin(ssid, pass);
+  EEPROM.commit();
+  // Wait
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.println();
+  // Start the server
+  server.begin();
+  Serial.println("Server started");
+  // Connected!
+  Serial.printf("[WIFI] STATION Mode, SSID: %s, IP address: %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+
+
+}
+void conectarWiFi() {
+
+  if (SerialBT.available()) {
+    caracter = (char)SerialBT.read();
+
+    if (wifiSSID) {
+      if (caracter != 13 || caracter != '\r') {
+        ssid[lenSSID] = (char) caracter;
+
+        lenSSID++;
+      } else {
+        Serial.printf("El SSID es: %s, ", ssid);
+        wifiSSID = false;
+        wifiPASS = true;
+        Serial.println("Introduce el pass del wifi:");
+      }
+
+
+    } else if (wifiPASS) {
+      if (caracter != 13 || caracter != '\r') {
+        if (caracter != '\n') {
+          pass[lenPASS] = (char) caracter;
+
+          lenPASS++;
+        }
+
+      } else {
+        Serial.printf("La PASS es: %s.\n", pass);
+        wifiPASS = false;
+        Serial.printf("Los credenciales del wifi son: SSID: %s PASS: %s", ssid, pass);
+
+        Serial.print(" ");
+
+        cont++;
+
+        Serial.println("Enciendo el wifi");
+        EEPROM.put(addrSSID, ssid);
+        EEPROM.put(addrPASS, pass);
+        EEPROM.commit();
+        iniciarWifi();
+
+        //envio la ip por bluetooth
+        SerialBT.print( WiFi.localIP().toString());
+        //apago el bluetooth
+        Serial.println("Apago el bluetooth");
+        delay(100);
+        SerialBT.end();
+
+      }
+    }
+
+  }
+}
+void desconectoWifi() {
+  Serial.println("Me desconecto del wifi");
+
+  WiFi.disconnect();
+  //  digitalWrite(pinLed,  LOW);
+  sinWifi = true;
+  for (int i = 0; i < lenSSID; i++) {
+    ssid[i] = NULL;
+  }
+  for (int i = 0; i < lenPASS; i++) {
+    pass[i] = NULL;
+  }
+  lenSSID = 0;
+  lenPASS = 0;
+  //como ya estan en null, se lo puedo pasar para que tmb los ponga a null
+  EEPROM.put(addrSSID, ssid);
+  EEPROM.put(addrPASS, pass);
+  EEPROM.commit();
+  delay(1);
+
+}
+
+///////////////////////////////////////////////////////////////////////RESPUESTAS WIFI
+void respuestaWiFi() {
+//  Serial.println("entro");
+  WiFiClient client = server.available();
+
+  if (!client) {
+    return;
+  }
+  // Wait until the client sends some data
+  Serial.print("new client");
+  while (!client.available()) {
+    Serial.print(".");
+    delay(1);
+  }
+
+  Serial.println("");
+  
+  // Read the first line of the request
+  String request = client.readStringUntil('\r');
+
+
+  Serial.println(request);
+  // Match the request
+  if (request.equals("a"))  {
+    Serial.println("Abro la puerta");
+    abrir();
+
+  } else if (request.equals("sof") )  {
+    sensoresActivados = APAGADOS;
+    digitalWrite(pinSens,  LOW);
+    Serial.println("Sensores apagados");
+  } else if (request.equals("ce") )  {
+    Serial.println("Cierro la puerta");
+    cerrar();
+  } else if (request.equals("P") )  {
+    Serial.println("STOP");
+    para();
+
+  } else if (request.equals("dis")  ) {
+    client.stop();
+    desconectoWifi();
+
+  } else if (request.indexOf("timeA") != -1)  {
+    String tiempo = "";
+    for (int i = 5; i < request.length(); i++) {
+      tiempo += request.charAt(i);
+    }
+    tiempoA = tiempo.toInt();
+    Serial.print("tiempo A ");
+    Serial.println(tiempoA); 
+  } else if (request.indexOf("timeC")!=-1 ) {
+
+    String tiempo = "";
+    for (int i = 5; i < request.length(); i++) {
+      tiempo += request.charAt(i);
+    }
+ Serial.print("tiempo C ");
+    Serial.println(tiempoC); 
+    tiempoC = tiempo.toInt();
+    //comprobaciones para cancelar la alarma
+  } else if (request.equals("-C") )  {
+    tiempoC = -1;
+  } else if (request.equals("-A") )  {
+    tiempoA = -1;
+  } else if (request.equals("son") )  {
+    sensoresActivados = ACTIVOS;
+    digitalWrite(pinSens,  HIGH);
+    Serial.println("Sensores activos");
+
+  } else if (request.equals("con") )  {
+    digitalWrite(pinCerrojo,  HIGH);
+    Serial.println("Cerrojo activo");
+
+  } else if (request.equals("cof") )  {
+    digitalWrite(pinCerrojo,  LOW);
+    Serial.println("Cerrojo apagado");
+
+  } else if (request.equals("lon") )  {
+    alarma = true;
+    Serial.println("Alarma activada");
+
+  } else if (request.equals("lof") )  {
+    alarma = false;
+    Serial.println("Alarma apagada");
+
+  }else if(request.equals("lon")){
+    //solo puede encender la alarma si la puerta esta cerrada
+    if(estadoPuerta==CERRADA){
+      sonar=true;
+    }
+  }else if(request.equals("lof")){
+    sonar=false;
+  }
+
+
+
+}
+
+
+
+//////////////////////////////////////////////////////////////////////// LOOP
+void loop() {
+
+
+  estadoA = digitalRead(botonAbierto);
+  estadoC = digitalRead(botonCerrado);
+  estadoAlxC=digitalRead(alexaCierra);
+  estadoAlxA=digitalRead(alexaAbre);
+
+  
+  if (digitalRead(alexaCierra) ){
+    Serial.println("Alexa cierra");
+    cerrar();
+    
+  }else if (digitalRead(alexaAbre)){
+    Serial.println("Alexa abre");
+    abrir();
+    
+  }
+  estadosPuerta();
+
+  if (digitalRead(sensores) && sensoresActivados == ACTIVOS && estadoPuerta == CERRADA) {
+    abrir();
+    estadoPuerta = ENTRE;
+  }
+
+  maquinaEstados();
+
+
+
+  pulsadoDesc = digitalRead(botonDesconectarWifi);
+  if (pulsadoDesc)
+  {
+    Serial.println("se ha pulsado el boton");
+    desconectoWifi();
+    delay(200);
+  }
+  //si estoy sin wifi, activo el bluetooth y lo vuelvo a buscar
+  if (sinWifi) {
+    SerialBT.begin("HEIMDALL"); //Bluetooth device name
+    Serial.println("The device started, now you can pair it with bluetooth!");
+    Serial.println("Introduce el ssid del wifi:");
+    cont = 0;
+    sinWifi = false;
+    wifiSSID = true;
+    wifiPASS = false;
+  } else {
+    if (cont == 0) {
+      conectarWiFi();
+
+
+    } else {
+
+      respuestaWiFi();
+
+    }
+  }
+  //empiezo a hacer la cuenta atrás para CERRAR
+  if (tiempoC >= 0) { // Conviene que la variable "tiempo" sea con signo, ya que para cancelarla, lo pongo a -1
+    if (tiempoC == 0) {
+      cerrar();
+      tiempoC--;
+    }
+    unsigned long tActual = millis();
+    if (tActual - tAnteriorC >= 1000) { // Descuento cada segundo
+      Serial.print("Quedan ");
+      Serial.print(tiempoC);
+      Serial.println(" segundos para cierre automático");
+
+
+      tAnteriorC = tActual; // Momento en que se inicia un nuevo segundo
+      tiempoC--;
+    }
+  }
+  //empiezo a hacer la cuenta atrás para ABRIR
+  if (tiempoA >= 0) { // Conviene que la variable "tiempo" sea con signo, ya que para cancelarla, lo pongo a -1
+    if (tiempoA == 0) {
+      abrir();
+      tiempoA--;
+    }
+    unsigned long tActual = millis();
+    if (tActual - tAnteriorA >= 1000) { // Descuento cada segundo
+      Serial.print("Quedan ");
+      Serial.print(tiempoA);
+      Serial.println(" segundos para apertura automática");
+
+      tAnteriorA = tActual; // Momento en que se inicia un nuevo segundo
+      tiempoA--;
+    }
+  }
+
+
+}
