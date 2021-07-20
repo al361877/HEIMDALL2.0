@@ -1,0 +1,116 @@
+#include <Arduino.h>
+#ifdef ESP32
+#include <WiFi.h>
+#else
+#include <ESP8266WiFi.h>
+#endif
+#include "fauxmoESP.h"
+
+#define WIFI_SSID "RaulRoom"
+#define WIFI_PASS "1636Raul1313"
+
+fauxmoESP fauxmo;
+
+
+// -----------------------------------------------------------------------------
+
+#define SERIAL_BAUDRATE     115200
+
+int alexaAbre = 32;
+int alexaCierra = 33;
+
+#define puerta           "PUERTA"
+
+
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Wifi
+// -----------------------------------------------------------------------------
+
+void wifiSetup() {
+
+  // Set WIFI module to STA mode
+  WiFi.mode(WIFI_STA);
+
+  // Connect
+  Serial.printf("[WIFI] Connecting to %s ", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  // Wait
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.println();
+
+  // Connected!
+  Serial.printf("[WIFI] STATION Mode, SSID: %s, IP address: %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+
+}
+
+void setup() {
+
+  // Init serial port and clean garbage
+  Serial.begin(SERIAL_BAUDRATE);
+  Serial.println();
+  Serial.println();
+
+  // LEDs
+  pinMode(alexaAbre, OUTPUT);
+  pinMode(alexaCierra, OUTPUT);
+
+  digitalWrite(alexaAbre, LOW);
+  digitalWrite(alexaCierra, LOW);
+  // Wifi
+  wifiSetup();
+
+ 
+  fauxmo.createServer(true); // not needed, this is the default value
+  fauxmo.setPort(80); // This is required for gen3 devices
+
+
+  fauxmo.enable(true);
+
+
+
+  // Add virtual devices
+  fauxmo.addDevice(puerta);
+
+
+  fauxmo.onSetState([](unsigned char device_id, const char * device_name, bool state, unsigned char value) {
+
+
+
+    Serial.printf("[MAIN] Device #%d (%s) state: %s value: %d\n", device_id, device_name, state ? "ON" : "OFF", value);
+
+    // Primero compruebo que me llega es la puerta
+    // Si desde Alexa llega un On, siguinifica que se quiere abrir la puerta, entonces le envío un 1 al esp32 Main, espero 200 ms y le envío un 0, 
+    // porque si no este estaría con los motores encendidos permanentemente. Se hace lo mismo para cerrar, pero por el puerto correspondiente.
+    if (strcmp(device_name, puerta) == 0) {
+      if (state) {
+        digitalWrite(alexaAbre, HIGH);
+        delay(200);
+        Serial.println("abro");
+        digitalWrite(alexaAbre, LOW);
+      } else {
+        digitalWrite(alexaCierra, HIGH);
+        delay(200);
+        Serial.println("cierro");
+        digitalWrite(alexaCierra, LOW);
+      }
+    }
+
+  });
+
+}
+
+void loop() {
+  
+  // fauxmoESP usa un servidor TCP asíncrono pero un servidor UDP de sincronización
+   // Por lo tanto, tenemos que sondear manualmente los paquetes UDP 
+  fauxmo.handle();
+
+
+
+}
